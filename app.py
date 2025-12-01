@@ -11,6 +11,7 @@ import numpy as np
 
 from vibe_blending import run_vibe_blend_safe, run_vibe_blend_not_safe
 from ipadapter_model import create_image_grid
+from llm_planner import analyze_pair_with_llm
 
 USE_HUGGINGFACE_ZEROGPU = os.getenv("USE_HUGGINGFACE_ZEROGPU", "false").lower() == "false" #"true"
 DEFAULT_CONFIG_PATH = "./config.yaml"
@@ -64,7 +65,7 @@ def load_gradio_images_helper(pil_images: Union[List, Image.Image, str]) -> List
     return processed_images
 
 
-def create_gradio_interface():
+def create_gradio_interface():    
     demo = gr.Blocks()
     with demo:
         gr.Markdown("""
@@ -99,14 +100,19 @@ def create_gradio_interface():
                     with gr.Row():
                         extra_images = gr.Gallery(label="Extra Images (optional)", show_label=True, columns=3, rows=2, height=150)
                         negative_images = gr.Gallery(label="Negative Images (optional)", show_label=True, columns=3, rows=2, height=150)
+                    creative_prompt = gr.Textbox(
+                        label="Creative Intent (optional)",
+                        placeholder="e.g. emphasize colors, keep faces simple"
+                    )
             with gr.Column():
                 with gr.Group():
                     # blending_results = gr.Gallery(label="Vibe Blending Results", columns=5, rows=4, height=600)
                     blending_results = gr.Image(label="Vibe Blending Results", show_label=True, height=600)
                     blend_button = gr.Button("🔴 Run Vibe Blending", variant="primary")
+                    llm_explanation = gr.Markdown(label="LLM Creative Explanation")
         
         # Training wrapper function
-        def blend_button_click(input1, input2, extra_images, negative_images, alpha_start, alpha_end, n_steps):
+        def blend_button_click(input1, input2, extra_images, negative_images, alpha_start, alpha_end, n_steps, creative_prompt):
             input1 = load_gradio_images_helper(input1)
             input2 = load_gradio_images_helper(input2)
             extra_images = load_gradio_images_helper(extra_images)
@@ -122,13 +128,30 @@ def create_gradio_interface():
             elif isinstance(negative_images, Image.Image):
                 negative_images = [negative_images]
 
-            alpha_weights = np.linspace(alpha_start, alpha_end, n_steps+2)[1:-1].tolist()
+            llm_suggestion = analyze_pair_with_llm(input1, input2, creative_prompt)
+
+            # Apply LLM suggestions to alpha / n_steps
+            alpha_start_eff = llm_suggestion.get("alpha_start", alpha_start)
+            alpha_end_eff = llm_suggestion.get("alpha_end", alpha_end)
+            n_steps_eff = llm_suggestion.get("n_steps", None) or int(n_steps)
+
+            alpha_weights = np.linspace(alpha_start_eff, alpha_end_eff, n_steps_eff+2)[1:-1].tolist()
+            #alpha_weights = np.linspace(alpha_start, alpha_end, n_steps+2)[1:-1].tolist()
             blended_images = run_vibe_blend_not_safe(input1, input2, extra_images, negative_images, DEFAULT_CONFIG_PATH, alpha_weights)
-            blended_images = create_image_grid(blended_images, rows=np.ceil(len(blended_images)/4).astype(int), cols=4)
-            return blended_images
+            blended_images_grid = create_image_grid(blended_images, rows=np.ceil(len(blended_images)/4).astype(int), cols=4)
+            
+            explanation_md = f"**LLM focus:** {', '.join(llm_suggestion.get('focus_attributes', []))}\n\n"
+            explanation_md += llm_suggestion.get("explanation", "")
+
+            return blended_images_grid, explanation_md
         
-        blend_button.click(blend_button_click, inputs=[input1, input2, extra_images, negative_images, alpha_start, alpha_end, n_steps], outputs=[blending_results])
-        
+        # blend_button.click(blend_button_click, inputs=[input1, input2, extra_images, negative_images, alpha_start, alpha_end, n_steps], outputs=[blending_results])
+        blend_button.click(
+            blend_button_click,
+            inputs=[input1, input2, extra_images, negative_images, alpha_start, alpha_end, n_steps, creative_prompt],
+            outputs=[blending_results, llm_explanation],
+        )
+
         example_cases = [
             [Image.open("./images/playviolin_hr.png"), Image.open("./images/playguitar_hr.png")],
             [Image.open("./images/input_cat.png"), Image.open("./images/input_bread.png")],
