@@ -21,6 +21,8 @@ import gradio as gr
 from ncut_pytorch.ncuts.ncut_nystrom import _plain_ncut
 from ncut_pytorch.utils.math import rbf_affinity
 
+from device_utils import get_device, get_accelerator, get_devices_for_trainer, clear_memory, DEVICE
+
 
 def compute_ncut_eigenvectors(features: torch.Tensor, n_eig: int) -> Tuple[torch.Tensor, torch.Tensor]:
     gamma = features.var(0).sum().item()
@@ -475,9 +477,8 @@ class FeatureDataset(torch.utils.data.Dataset):
 
 
 def clear_gpu_memory():
-    torch.cuda.empty_cache()
-    torch.cuda.ipc_collect()
-    gc.collect()
+    """Clear GPU/MPS memory cache and run garbage collection."""
+    clear_memory()
 
 
 def train_vibe_space(model: VibeSpaceModel, 
@@ -485,14 +486,20 @@ def train_vibe_space(model: VibeSpaceModel,
                           input_features: torch.Tensor,
                           target_features: torch.Tensor,
                           negative_features: Optional[torch.Tensor] = None,
-                          devices: List[int] = [0]) -> pl.Trainer:
+                          devices: List[int] = None) -> pl.Trainer:
     clear_gpu_memory()
     dataset = FeatureDataset(input_features, target_features, negative_features)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=8, shuffle=True, num_workers=0)
+    
+    # Get the appropriate accelerator and devices for the current platform
+    accelerator = get_accelerator()
+    if devices is None:
+        devices = get_devices_for_trainer()
+    
     trainer = pl.Trainer(
         max_steps=config.steps,
         gradient_clip_val=1.0,
-        accelerator="gpu", 
+        accelerator=accelerator, 
         devices=devices,
         enable_checkpointing=False,
         enable_progress_bar=True,

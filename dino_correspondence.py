@@ -17,6 +17,8 @@ from ncut_pytorch import ncut_fn, kway_ncut, convert_to_lab_color
 from ncut_pytorch.color import tsne_color
 from ncut_pytorch.utils.gamma import find_gamma_by_degree
 
+from device_utils import get_device, DEVICE
+
 
 # ===== Core NCut and Clustering Functions =====
 
@@ -26,6 +28,7 @@ def ncut_tsne_multiple_images(image_embeds, n_eig=50, gamma=None, degree=0.5):
     
     image_embeds is (batch, length, channels)
     """
+    device = get_device()
     batch_size, length, channels = image_embeds.shape
     flattened_input = image_embeds.flatten(end_dim=-2)
     
@@ -33,10 +36,10 @@ def ncut_tsne_multiple_images(image_embeds, n_eig=50, gamma=None, degree=0.5):
         gamma = find_gamma_by_degree(flattened_input, degree)
     
     eigenvectors, eigenvalues = ncut_fn(
-        flattened_input, n_eig=n_eig, gamma=gamma, device='cuda'
+        flattened_input, n_eig=n_eig, gamma=gamma, device=device
     )
     
-    rgb_colors = tsne_color(eigenvectors, n_dim=3, device='cuda', perplexity=50)
+    rgb_colors = tsne_color(eigenvectors, n_dim=3, device=device, perplexity=50)
     rgb_colors = convert_to_lab_color(rgb_colors)
     
     # Reshape back to original batch structure
@@ -47,6 +50,7 @@ def ncut_tsne_multiple_images(image_embeds, n_eig=50, gamma=None, degree=0.5):
 
 
 def _kway_cluster_single_image(image_embeds, n_clusters, gamma=None, degree=0.5):
+    device = get_device()
     length, channels = image_embeds.shape
     flattened_input = image_embeds.flatten(end_dim=-2)
     
@@ -59,7 +63,7 @@ def _kway_cluster_single_image(image_embeds, n_clusters, gamma=None, degree=0.5)
     n_eig = min(n_clusters * 2 + 6, flattened_input.shape[0] // 2 - 1)
     
     eigenvectors, _ = ncut_fn(
-        flattened_input, n_eig=n_eig, gamma=gamma, device='cuda'
+        flattened_input, n_eig=n_eig, gamma=gamma, device=device
     )
     
     continuous_clusters = kway_ncut(eigenvectors[:, :n_clusters])
@@ -91,6 +95,7 @@ def kway_cluster_multiple_images(image_embeds, n_clusters, gamma=None, degree=0.
     image_embeds is (batch, length, channels)
     return (batch, length, clusters)
     """
+    device = get_device()
     batch_size, length, channels = image_embeds.shape
     flattened_input = image_embeds.flatten(end_dim=-2)
     
@@ -101,7 +106,7 @@ def kway_cluster_multiple_images(image_embeds, n_clusters, gamma=None, degree=0.
     n_eig = min(n_clusters * 2 + 6, flattened_input.shape[0] // 2 - 1)
     
     eigenvectors, _ = ncut_fn(
-        flattened_input, n_eig=n_eig, gamma=gamma, device='cuda'
+        flattened_input, n_eig=n_eig, gamma=gamma, device=device
     )
     
     continuous_clusters = kway_ncut(eigenvectors[:, :n_clusters])

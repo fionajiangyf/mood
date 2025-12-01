@@ -11,6 +11,7 @@ from vibespace_model import VibeSpaceModel, train_vibe_space, clear_gpu_memory
 from dino_correspondence import kway_cluster_per_image, match_centers_two_images, get_cluster_center_features
 
 from extract_features import extract_dino_features, extract_clip_features, dino_image_transform, clip_image_transform
+from device_utils import get_device, clear_memory
 import logging
 import gradio as gr
 
@@ -36,7 +37,7 @@ def run_vibe_blend_safe(image1, image2, extra_images, negative_images, config_pa
             success = True
         except Exception as e:
             logging.error(f"Error training model: {e}")
-            torch.cuda.empty_cache()
+            clear_memory()
             continue
         
     success = False
@@ -52,7 +53,7 @@ def run_vibe_blend_safe(image1, image2, extra_images, negative_images, config_pa
             success = True
         except Exception as e:
             logging.error(f"Error generating images: {e}")
-            torch.cuda.empty_cache()
+            clear_memory()
             continue
 
     return blended_images

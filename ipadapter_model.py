@@ -15,10 +15,27 @@ import torch
 from PIL import Image
 from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline, DDIMScheduler, AutoencoderKL
 
-# Fix for torch 2.5.0 compatibility
-torch.backends.cuda.enable_cudnn_sdp(False)
+from device_utils import get_device, is_cuda_available, DEVICE
+
+# Fix for torch 2.5.0 compatibility (only needed for CUDA)
+if is_cuda_available():
+    torch.backends.cuda.enable_cudnn_sdp(False)
 
 from ip_adapter import IPAdapterPlus, IPAdapterPlusXL
+
+
+def get_dtype_for_device(device: str = None) -> torch.dtype:
+    """
+    Get the appropriate dtype for the device.
+    GPU (CUDA/MPS) can use float16, but CPU requires float32.
+    """
+    if device is None:
+        device = get_device()
+    if device == "cuda":
+        return torch.float16
+    else:
+        # CPU and MPS under Rosetta need float32
+        return torch.float32
 
 
 # ===== Image Utility Functions =====
@@ -57,7 +74,8 @@ def extract_clip_embeddings_from_pil(pil_image: Union[Image.Image, List[Image.Im
     ).pixel_values
     
     # Move to model device with appropriate dtype
-    processed_images = processed_images.to(ip_model.device, dtype=torch.float16)
+    dtype = get_dtype_for_device(ip_model.device if hasattr(ip_model, 'device') else None)
+    processed_images = processed_images.to(ip_model.device, dtype=dtype)
     
     # Extract embeddings from penultimate layer (better for downstream tasks)
     clip_embeddings = ip_model.image_encoder(
@@ -93,7 +111,8 @@ def extract_clip_embeddings_from_tensor(tensor_image: torch.Tensor,
         torch.Tensor: CLIP embeddings of shape (batch_size, seq_len, embed_dim)
     """
     # Move tensor to model device with appropriate dtype
-    tensor_image = tensor_image.to(ip_model.device, dtype=torch.float16)
+    dtype = get_dtype_for_device(ip_model.device if hasattr(ip_model, 'device') else None)
+    tensor_image = tensor_image.to(ip_model.device, dtype=dtype)
     
     # Resize to CLIP input resolution if requested
     if resize:
@@ -132,6 +151,8 @@ def _enhanced_get_image_embeds(self, pil_image=None, clip_image_embeds=None):
     Returns:
         Tuple of (conditional_embeds, unconditional_embeds)
     """
+    dtype = self.dtype if hasattr(self, 'dtype') else get_dtype_for_device(self.device)
+    
     # Process PIL images if provided
     if pil_image is not None:
         if isinstance(pil_image, Image.Image):
@@ -141,17 +162,20 @@ def _enhanced_get_image_embeds(self, pil_image=None, clip_image_embeds=None):
         processed_images = self.clip_image_processor(
             images=pil_image, return_tensors="pt"
         ).pixel_values
-        processed_images = processed_images.to(self.device, dtype=torch.float16)
+        processed_images = processed_images.to(self.device, dtype=dtype)
         
         clip_image_embeds = self.image_encoder(
             processed_images, output_hidden_states=True
         ).hidden_states[-2]
     
+    # Ensure clip_image_embeds has the right dtype
+    clip_image_embeds = clip_image_embeds.to(dtype=dtype)
+    
     # Project CLIP embeddings to IP-Adapter space
     conditional_embeds = self.image_proj_model(clip_image_embeds)
     
     # Generate unconditional embeddings (for classifier-free guidance)
-    zero_tensor = torch.zeros(1, 3, 224, 224).to(self.device, dtype=torch.float16)
+    zero_tensor = torch.zeros(1, 3, 224, 224).to(self.device, dtype=dtype)
     uncond_clip_embeds = self.image_encoder(
         zero_tensor, output_hidden_states=True
     ).hidden_states[-2]
@@ -163,7 +187,12 @@ def _enhanced_get_image_embeds(self, pil_image=None, clip_image_embeds=None):
 # ===== Model Loading Functions =====
 
 @torch.inference_mode()
-def load_stable_diffusion_pipeline(device: str = "cuda") -> StableDiffusionPipeline:
+def load_stable_diffusion_pipeline(device: str = None) -> StableDiffusionPipeline:
+    if device is None:
+        device = get_device()
+    
+    dtype = get_dtype_for_device(device)
+    
     # Model paths
     base_model_path = "SG161222/Realistic_Vision_V4.0_noVAE"
     vae_model_path = "stabilityai/sd-vae-ft-mse"
@@ -180,12 +209,12 @@ def load_stable_diffusion_pipeline(device: str = "cuda") -> StableDiffusionPipel
     )
     
     # Load VAE separately for better quality
-    vae = AutoencoderKL.from_pretrained(vae_model_path).to(dtype=torch.float16)
+    vae = AutoencoderKL.from_pretrained(vae_model_path).to(dtype=dtype)
     
     # Create Stable Diffusion pipeline
     pipeline = StableDiffusionPipeline.from_pretrained(
         base_model_path,
-        torch_dtype=torch.float16,
+        torch_dtype=dtype,
         scheduler=noise_scheduler,
         vae=vae,
         feature_extractor=None,  # Disable safety checker for faster inference
@@ -196,7 +225,12 @@ def load_stable_diffusion_pipeline(device: str = "cuda") -> StableDiffusionPipel
 
 
 @torch.inference_mode()
-def load_ip_adapter_model(device: str = "cuda", sd_only: bool = False) -> IPAdapterPlus:
+def load_ip_adapter_model(device: str = None, sd_only: bool = False) -> IPAdapterPlus:
+    if device is None:
+        device = get_device()
+    
+    dtype = get_dtype_for_device(device)
+    
     # Model and checkpoint paths
     base_model_path = "SG161222/Realistic_Vision_V4.0_noVAE"
     vae_model_path = "stabilityai/sd-vae-ft-mse"
@@ -215,12 +249,12 @@ def load_ip_adapter_model(device: str = "cuda", sd_only: bool = False) -> IPAdap
     )
     
     # Load high-quality VAE
-    vae = AutoencoderKL.from_pretrained(vae_model_path).to(dtype=torch.float16)
+    vae = AutoencoderKL.from_pretrained(vae_model_path).to(dtype=dtype)
     
     # Create base Stable Diffusion pipeline
     pipeline = StableDiffusionPipeline.from_pretrained(
         base_model_path,
-        torch_dtype=torch.float16,
+        torch_dtype=dtype,
         scheduler=noise_scheduler,
         vae=vae,
         feature_extractor=None,
@@ -245,21 +279,28 @@ def load_ip_adapter_model(device: str = "cuda", sd_only: bool = False) -> IPAdap
     return ip_model
 
 
-def load_ip_adapter_xl_model(device: str = "cuda") -> IPAdapterPlusXL:
+def load_ip_adapter_xl_model(device: str = None) -> IPAdapterPlusXL:
+    if device is None:
+        device = get_device()
+    
+    dtype = get_dtype_for_device(device)
+    
     base_model_path = "SG161222/RealVisXL_V1.0"
     image_encoder_path = "./downloads/models/image_encoder"
     ip_ckpt = "./downloads/sdxl_models/ip-adapter-plus_sdxl_vit-h.bin"
 
     pipe = StableDiffusionXLPipeline.from_pretrained(
         base_model_path,
-        torch_dtype=torch.float16,
+        torch_dtype=dtype,
         add_watermarker=False,
     )
     ip_model = IPAdapterPlusXL(pipe, image_encoder_path, ip_ckpt, device, num_tokens=16)
 
     return ip_model
 
-def load_ipadapter(version: str = "sd15", device: str = "cuda") -> IPAdapterPlus | IPAdapterPlusXL:
+def load_ipadapter(version: str = "sd15", device: str = None) -> IPAdapterPlus | IPAdapterPlusXL:
+    if device is None:
+        device = get_device()
     if version == "sd15":
         return load_ip_adapter_model(device)
     elif version == "sdxl":
@@ -286,8 +327,9 @@ def generate_images_from_clip_embeddings(ip_model : IPAdapterPlus,
     if clip_embeddings.ndim != 3:
         raise ValueError(f"Expected 3D embeddings (batch, seq, dim), got {clip_embeddings.shape}")
     
-    # Move to appropriate device and dtype
-    clip_embeddings = clip_embeddings.half().to(ip_model.device)
+    # Move to appropriate device and dtype (use model's dtype)
+    dtype = ip_model.dtype if hasattr(ip_model, 'dtype') else get_dtype_for_device(ip_model.device)
+    clip_embeddings = clip_embeddings.to(device=ip_model.device, dtype=dtype)
     
     # Generate images using IP-Adapter
     negative_prompt = "nsfw, lowres, (bad), text, error, fewer, extra, missing, worst quality, jpeg artifacts, low quality, watermark, unfinished, displeasing, oldest, early, chromatic aberration, signature, extra digits, artistic error, username, scan, [abstract]"

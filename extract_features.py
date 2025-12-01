@@ -16,6 +16,7 @@ from torchvision import transforms
 
 from ipadapter_model import extract_clip_embedding_tensor
 from ipadapter_model import load_ipadapter
+from device_utils import get_device, clear_memory, DEVICE
 
 
 # Default hyperparameters
@@ -49,9 +50,8 @@ image_inverse_transform = transforms.Compose([
 # ===== Memory Management =====
 
 def clear_gpu_memory():
-    """Clear GPU cache and run garbage collection to free memory."""
-    torch.cuda.empty_cache()
-    gc.collect()
+    """Clear GPU/MPS cache and run garbage collection to free memory."""
+    clear_memory()
 
 
 # ===== Feature Extraction Functions =====
@@ -68,10 +68,12 @@ def extract_dino_features(images: torch.Tensor, batch_size: int = DEFAULT_BATCH_
     Returns:
         torch.Tensor: DINO features of shape (N, L, D)
     """
+    device = get_device()
+    
     # Load DINO model
     #dino_model = torch.hub.load('facebookresearch/dino:main', 'dino_vits16')
     dino_model = torch.hub.load('facebookresearch/dino:main', 'dino_vitb16')
-    dino_model = dino_model.eval().cuda()
+    dino_model = dino_model.eval().to(device)
 
     # Process images in batches
     num_batches = (images.shape[0] + batch_size - 1) // batch_size
@@ -81,7 +83,7 @@ def extract_dino_features(images: torch.Tensor, batch_size: int = DEFAULT_BATCH_
         start_idx = batch_idx * batch_size
         end_idx = min((batch_idx + 1) * batch_size, images.shape[0])
         
-        batch_images = images[start_idx:end_idx].cuda()
+        batch_images = images[start_idx:end_idx].to(device)
         batch_features = dino_model.get_intermediate_layers(batch_images)[-1]
         feature_batches.append(batch_features.cpu())
     
@@ -107,8 +109,10 @@ def extract_clip_features(images: torch.Tensor, batch_size: int = DEFAULT_BATCH_
     Returns:
         torch.Tensor: CLIP features of shape (N, L, D)
     """
+    device = get_device()
+    
     # Load IP-Adapter model (contains CLIP encoder)
-    ip_adapter_model = load_ipadapter(version=ipadapter_version)
+    ip_adapter_model = load_ipadapter(version=ipadapter_version, device=device)
     
     # Process images in batches
     num_batches = (images.shape[0] + batch_size - 1) // batch_size
@@ -118,7 +122,7 @@ def extract_clip_features(images: torch.Tensor, batch_size: int = DEFAULT_BATCH_
         start_idx = batch_idx * batch_size
         end_idx = min((batch_idx + 1) * batch_size, images.shape[0])
         
-        batch_images = images[start_idx:end_idx].cuda()
+        batch_images = images[start_idx:end_idx].to(device)
         batch_features = extract_clip_embedding_tensor(
             batch_images, ip_adapter_model, resize=False
         )

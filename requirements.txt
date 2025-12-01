@@ -10,5 +10,8 @@ scikit-dimension
 pytorch-lightning==1.9.4
 diffusers==0.33.1
 transformers==4.47.0
-triton==3.0.0
 ncut_pytorch==2.3.0
+gradio
+
+# triton is only needed for Linux with CUDA
+# triton==3.0.0 ; sys_platform == 'linux'

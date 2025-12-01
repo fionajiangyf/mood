@@ -1,3 +1,6 @@
+# Import device_utils first to set MPS fallback environment variable before torch loads
+import device_utils
+
 import logging
 import os
 from typing import List, Union
@@ -62,15 +65,7 @@ def load_gradio_images_helper(pil_images: Union[List, Image.Image, str]) -> List
 
 
 def create_gradio_interface():
-    theme = gr.themes.Base(
-        spacing_size='md', 
-        text_size='lg', 
-        primary_hue='blue', 
-        neutral_hue='slate', 
-        secondary_hue='pink'
-    )
-    
-    demo = gr.Blocks(theme=theme)
+    demo = gr.Blocks()
     with demo:
         gr.Markdown("""
         ## Vibe Blending Demo
