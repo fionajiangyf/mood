@@ -26,8 +26,7 @@ def _describe_image_with_vision(img: Image.Image) -> str:
         data_url = _encode_image_to_data_url(img)
 
         completion = client.chat.completions.create(
-            # Can switch this to "gpt-4o" or "gpt-4o-mini"
-            model="gpt-4o-mini",
+            model="gpt-4o",
             messages=[
                 {
                     "role": "user",
