@@ -229,11 +229,20 @@ def judge_best_blend(
     )
 
     raw = (resp.output_text or "").strip()
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+    
     try:
         out = json.loads(raw)
         best = int(out.get("best_index", 0))
         best = max(0, min(len(candidates)-1, best))
         reason = str(out.get("reason", "")).strip()
         return {"best_index": best, "reason": reason}
-    except Exception:
+    except Exception as e:
+        print(f"[DEBUG] Failed to parse judge response as JSON")
+        print(f"[DEBUG] Raw response: {raw}")
+        print(f"[DEBUG] Error: {e}")
         return {"best_index": 0, "reason": "Judge failed to return valid JSON; defaulting to candidate 0."}
