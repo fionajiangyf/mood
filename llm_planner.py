@@ -1,4 +1,4 @@
-from typing import Dict, Any
+from typing import Dict, Any, List
 from io import BytesIO
 import base64
 import json
@@ -8,12 +8,17 @@ from openai import OpenAI
 
 client = OpenAI()
 
-def _encode_image_to_data_url(img: Image.Image) -> str:
+def _encode_image_to_data_url(img: Image.Image, max_side: int = 768) -> str:
     """
-    Convert a PIL Image to a base64 data URL that the OpenAI vision models can read.
+    Convert a PIL Image to a base64 data URL.
+    Also downsizes to keep requests small and reliable.
     """
+    img = img.convert("RGB")
+    img = img.copy()
+    img.thumbnail((max_side, max_side))
+
     buf = BytesIO()
-    img.save(buf, format="PNG")
+    img.save(buf, format="PNG", optimize=True)
     b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
     return f"data:image/png;base64,{b64}"
 
@@ -25,29 +30,20 @@ def _describe_image_with_vision(img: Image.Image) -> str:
     try:
         data_url = _encode_image_to_data_url(img)
 
-        completion = client.chat.completions.create(
+        resp = client.responses.create(
             model="gpt-4o",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": (
-                                "Describe this image in 1–2 short sentences, "
-                                "focusing on subject, pose, colors, style, and overall vibe."
-                            ),
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": data_url},
-                        },
-                    ],
-                }
-            ],
+            input=[{
+                "role": "user",
+                "content": [
+                    {"type": "input_text",
+                     "text": "Describe this image in 1–2 short sentences, focusing on subject, pose, colors, style, and overall vibe."},
+                    {"type": "input_image",
+                     "image_url": data_url},
+                ],
+            }],
         )
 
-        desc = completion.choices[0].message.content
+        desc = resp.output_text
         if not desc:
             raise ValueError("Empty caption from model.")
         return desc.strip()
@@ -127,15 +123,14 @@ def analyze_pair_with_llm(
     """
 
     # Ask the model for a JSON plan
-    completion = client.chat.completions.create(
-        model="gpt-4.1-mini",  # or "gpt-4o-mini"/"gpt-4o"
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+    resp = client.responses.create(
+        model="gpt-4.1",
+        input=[
+            {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
+            {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
         ],
     )
-
-    raw_content = completion.choices[0].message.content
+    raw_content = (resp.output_text or "").strip()
 
     try:
         content = json.loads(raw_content)
@@ -212,27 +207,28 @@ def judge_best_blend(
     )
 
     # Build a single message containing all candidates
-    content = [{"type": "text", "text": (
+    content = [{"type": "input_text", "text": (
         f"Input A: {a_desc}\n"
         f"Input B: {b_desc}\n\n"
         f"Creative intent: {creative_prompt}\n"
         f"Judge criteria: {judge_criteria}\n\n"
         "Below are candidate blended images. Pick the best one.\n"
-        "Return best_index as an integer from 0 to "
-        f"{len(candidates)-1}."
+        f"Return best_index as an integer from 0 to {len(candidates)-1}."
     )}]
 
     for i, url in enumerate(candidate_urls):
-        content.append({"type": "text", "text": f"Candidate {i}:"})
-        content.append({"type": "image_url", "image_url": {"url": url}})
+        content.append({"type": "input_text", "text": f"Candidate {i}:"})
+        content.append({"type": "input_image", "image_url": url})
 
-    completion = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "system", "content": system},
-                  {"role": "user", "content": content}],
+    resp = client.responses.create(
+        model="gpt-4o",
+        input=[
+            {"role": "system", "content": [{"type": "input_text", "text": system}]},
+            {"role": "user", "content": content},
+        ],
     )
 
-    raw = completion.choices[0].message.content or ""
+    raw = (resp.output_text or "").strip()
     try:
         out = json.loads(raw)
         best = int(out.get("best_index", 0))
