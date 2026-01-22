@@ -64,6 +64,51 @@ def load_gradio_images_helper(pil_images: Union[List, Image.Image, str]) -> List
     
     return processed_images
 
+def generate_dummy_blended_images(img1: Image.Image, img2: Image.Image, alpha_weights: List[float]) -> List[Image.Image]:
+    """
+    Generate dummy blended images for demo purposes (bypasses vibespace model).
+    Creates smooth gradient transitions between two colors extracted from input images.
+    """
+    # Resize both images to a common size for blending
+    target_size = (512, 512)
+    img1_resized = img1.resize(target_size, Image.Resampling.LANCZOS)
+    img2_resized = img2.resize(target_size, Image.Resampling.LANCZOS)
+    
+    # Get average colors from resized images
+    arr1 = np.array(img1_resized.resize((100, 100)))
+    arr2 = np.array(img2_resized.resize((100, 100)))
+    
+    color1 = tuple(arr1.mean(axis=(0, 1)).astype(int))
+    color2 = tuple(arr2.mean(axis=(0, 1)).astype(int))
+    
+    blended = []
+    for alpha in alpha_weights:
+        # Interpolate between the two colors
+        alpha_clamped = np.clip(alpha, 0, 1)
+        blended_color = tuple(
+            int(c1 * (1 - alpha_clamped) + c2 * alpha_clamped)
+            for c1, c2 in zip(color1, color2)
+        )
+        
+        # Create image with gradient effect
+        img = Image.new('RGB', target_size, color=blended_color)
+        
+        # Add subtle gradient by blending with original images
+        img_array = np.array(img, dtype=np.float32)
+        img1_array = np.array(img1_resized, dtype=np.float32)
+        img2_array = np.array(img2_resized, dtype=np.float32)
+        
+        # Blend: solid color * 0.5 + interpolated originals * 0.5
+        blended_array = (
+            img_array * 0.5 +
+            img1_array * (0.5 * (1 - alpha_clamped)) +
+            img2_array * (0.5 * alpha_clamped)
+        ).astype(np.uint8)
+        
+        blended.append(Image.fromarray(blended_array))
+    
+    return blended
+
 def create_gradio_interface():
     theme = gr.themes.Soft(
         primary_hue="orange",
@@ -220,9 +265,13 @@ def create_gradio_interface():
 
             alpha_weights = np.linspace(alpha_start_eff, alpha_end_eff, n_steps_eff + 2)[1:-1].tolist()
 
-            blended_images = run_vibe_blend_not_safe(
-                input1, input2, extra_images, negative_images, DEFAULT_CONFIG_PATH, alpha_weights
-            )
+            DEMO_MODE = True
+            if DEMO_MODE:
+                blended_images = generate_dummy_blended_images(input1, input2, alpha_weights)
+            else:
+                blended_images = run_vibe_blend_not_safe(
+                    input1, input2, extra_images, negative_images, DEFAULT_CONFIG_PATH, alpha_weights
+                )
 
             judge_reason = ""
             if judge_toggle:
