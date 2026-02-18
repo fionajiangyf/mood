@@ -1,5 +1,6 @@
 torch
 torchvision
+setuptools<82
 einops
 matplotlib
 opencv-python

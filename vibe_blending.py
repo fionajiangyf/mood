@@ -216,16 +216,26 @@ def generate_blend_images(image1: Image.Image,
         interpolated_embedding = compressed_image_embeds[0] + direction_field * weight
         decompressed_embedding = model.decoder(interpolated_embedding)
         
-        batch_images = generate_images_from_clip_embeddings(
-            ip_model, decompressed_embedding, num_samples=1, seed=seed
-        )
-        if np.all(np.array(batch_images[0]) == 0):
-            raise ValueError("Generated image is all black")
-        generated_images.extend(batch_images)
+        # Retry generation a few times if we get a black/near-black image
+        attempts = 3
+        img = None
+        for attempt in range(attempts):
+            attempt_seed = None if seed is None else int(seed) + attempt
+            batch_images = generate_images_from_clip_embeddings(
+                ip_model, decompressed_embedding, num_samples=1, seed=attempt_seed
+            )
+            img = batch_images[0]
+            img_arr = np.array(img)
+            if img_arr.mean() > 1.0:
+                break
+        if img is None or np.array(img).mean() <= 1.0:
+            # Skip instead of crashing the whole run
+            gr.Warning("Generated image was black; skipping this interpolation step.")
+            continue
+        generated_images.append(img)
     
     # Clean up
     del ip_model
     clear_gpu_memory()
     
     return generated_images
-

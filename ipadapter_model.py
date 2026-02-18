@@ -9,6 +9,7 @@ This module provides utilities for working with IP-Adapter models, including:
 """
 
 from typing import List, Optional, Union, Tuple
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -36,6 +37,61 @@ def get_dtype_for_device(device: str = None) -> torch.dtype:
     else:
         # CPU and MPS under Rosetta need float32
         return torch.float32
+
+
+def _resolve_ipadapter_paths(version: str) -> Tuple[str, str]:
+    """
+    Resolve local paths for IP-Adapter assets. If missing, fall back to HF repo IDs
+    and download the IP-Adapter checkpoint.
+    """
+    base_dir = Path("./downloads")
+    image_encoder_path = base_dir / "models" / "image_encoder"
+
+    if version == "sd15":
+        ip_ckpt = base_dir / "models" / "ip-adapter-plus_sd15.bin"
+        ip_ckpt_repo = "h94/IP-Adapter"
+        ip_ckpt_filename = "models/ip-adapter-plus_sd15.bin"
+    else:
+        ip_ckpt = base_dir / "sdxl_models" / "ip-adapter-plus_sdxl_vit-h.bin"
+        ip_ckpt_repo = "h94/IP-Adapter"
+        ip_ckpt_filename = "sdxl_models/ip-adapter-plus_sdxl_vit-h.bin"
+
+    def _has_hf_model_files(path: Path) -> bool:
+        return (
+            (path / "config.json").is_file()
+            and (
+                (path / "model.safetensors").is_file()
+                or (path / "pytorch_model.bin").is_file()
+            )
+        )
+
+    # If image encoder folder isn't present or incomplete, use repo id directly
+    if not image_encoder_path.exists() or not _has_hf_model_files(image_encoder_path):
+        image_encoder_path_resolved = "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
+    else:
+        image_encoder_path_resolved = str(image_encoder_path)
+
+    # Ensure IP-Adapter checkpoint exists; download if missing
+    if not ip_ckpt.exists():
+        base_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            from huggingface_hub import hf_hub_download
+        except Exception as e:
+            raise RuntimeError(
+                "huggingface_hub is required to download IP-Adapter checkpoints. "
+                "Install or re-run `pip install -r requirements.txt`."
+            ) from e
+        ip_ckpt_path = hf_hub_download(
+            repo_id=ip_ckpt_repo,
+            filename=ip_ckpt_filename,
+            local_dir=str(base_dir),
+            local_dir_use_symlinks=False,
+        )
+        ip_ckpt_resolved = ip_ckpt_path
+    else:
+        ip_ckpt_resolved = str(ip_ckpt)
+
+    return image_encoder_path_resolved, ip_ckpt_resolved
 
 
 # ===== Image Utility Functions =====
@@ -234,8 +290,7 @@ def load_ip_adapter_model(device: str = None, sd_only: bool = False) -> IPAdapte
     # Model and checkpoint paths
     base_model_path = "SG161222/Realistic_Vision_V4.0_noVAE"
     vae_model_path = "stabilityai/sd-vae-ft-mse"
-    image_encoder_path = "./downloads/models/image_encoder"
-    ip_checkpoint_path = "./downloads/models/ip-adapter-plus_sd15.bin"
+    image_encoder_path, ip_checkpoint_path = _resolve_ipadapter_paths("sd15")
 
     # Configure DDIM scheduler
     noise_scheduler = DDIMScheduler(
@@ -286,8 +341,7 @@ def load_ip_adapter_xl_model(device: str = None) -> IPAdapterPlusXL:
     dtype = get_dtype_for_device(device)
     
     base_model_path = "SG161222/RealVisXL_V1.0"
-    image_encoder_path = "./downloads/models/image_encoder"
-    ip_ckpt = "./downloads/sdxl_models/ip-adapter-plus_sdxl_vit-h.bin"
+    image_encoder_path, ip_ckpt = _resolve_ipadapter_paths("sdxl")
 
     pipe = StableDiffusionXLPipeline.from_pretrained(
         base_model_path,

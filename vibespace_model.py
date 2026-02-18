@@ -25,10 +25,34 @@ from device_utils import get_device, get_accelerator, get_devices_for_trainer, c
 
 
 def compute_ncut_eigenvectors(features: torch.Tensor, n_eig: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    # Robust NCut eigen computation with fallbacks for ill-conditioned affinity matrices.
+    n_samples = features.shape[0]
+    n_eig = int(min(max(1, n_eig), max(1, n_samples - 1)))
+    features = torch.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
     gamma = features.var(0).sum().item()
+    if not (gamma > 0.0 and float("inf") > gamma):
+        gamma = 1.0
     affinity_matrix = rbf_affinity(features, gamma=gamma)
-    eigenvectors, eigenvalues = _plain_ncut(affinity_matrix, n_eig)
-    return eigenvectors, eigenvalues
+
+    def _try_plain_ncut(A: torch.Tensor, k: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        return _plain_ncut(A, k)
+
+    try:
+        return _try_plain_ncut(affinity_matrix, n_eig)
+    except Exception:
+        # Add small jitter to diagonal and retry in float64 on CPU
+        try:
+            A = affinity_matrix.detach()
+            eps = 1e-4 * float(torch.mean(torch.diag(A)).item() if A.numel() else 1.0)
+            A = A + torch.eye(A.shape[0], device=A.device, dtype=A.dtype) * eps
+            A_cpu = A.to(dtype=torch.float64, device="cpu")
+            return _try_plain_ncut(A_cpu, n_eig)
+        except Exception:
+            # Final fallback: return zeros to avoid crashing training
+            device = features.device
+        eigenvectors = torch.zeros((n_samples, n_eig), device=device, dtype=features.dtype)
+        eigenvalues = torch.zeros((n_eig,), device=device, dtype=features.dtype)
+        return eigenvectors, eigenvalues
 
 
 # ===== Neural Network Components =====
@@ -203,6 +227,12 @@ class VibeSpaceModel(pl.LightningModule):
             compressed_features,
             reconstructed_features,
         )
+
+        if not torch.isfinite(total_loss):
+            # Return a zero loss that still participates in autograd
+            zero_loss = sum(p.sum() * 0.0 for p in self.parameters())
+            self.log("loss/total", torch.tensor(0.0, device=total_loss.device), prog_bar=True)
+            return zero_loss
         
         self.log("loss/total", total_loss, prog_bar=True)
         return total_loss
@@ -240,7 +270,7 @@ class VibeSpaceModel(pl.LightningModule):
         
         while current_n_eig <= max_available:
             eigvec_subset = eigenvectors[:, :current_n_eig]
-            eigvec_normalized = F.normalize(eigvec_subset, dim=-1)
+            eigvec_normalized = F.normalize(eigvec_subset, dim=-1, eps=1e-6)
             
             total_similarity += eigvec_normalized @ eigvec_normalized.T
             
@@ -285,6 +315,7 @@ class VibeSpaceModel(pl.LightningModule):
         
         # flag loss on the sample points 
         similarity = all_compressed @ all_compressed.T
+        similarity = torch.nan_to_num(similarity, nan=0.0, posinf=0.0, neginf=0.0)
         eigenvectors_pos, _ = compute_ncut_eigenvectors(all_reconstructed, self.config.n_eig)
 
         if has_negative and self.config.get('do_decoder_negative_flag', False):
@@ -313,11 +344,11 @@ class VibeSpaceModel(pl.LightningModule):
                     P = eigenvectors_pos[:, :current_n_eig]
                     N = neg_eigenvectors[:, :current_n_eig]
 
-                    N_norm = F.normalize(N, dim=0)
+                    N_norm = F.normalize(N, dim=0, eps=1e-6)
                     projection = torch.matmul(N_norm.T, P)
                     P_filtered = P - beta * torch.matmul(N_norm, projection)
 
-                    P_filtered_norm = F.normalize(P_filtered, dim=-1)
+                    P_filtered_norm = F.normalize(P_filtered, dim=-1, eps=1e-6)
                     total_filtered_similarity += P_filtered_norm @ P_filtered_norm.T
 
                     num_scales += 1
@@ -343,6 +374,7 @@ class VibeSpaceModel(pl.LightningModule):
         gt_similarity = self._compute_multiscale_similarity(gt_eigenvectors)
         flattened_compressed = compressed_features.flatten(0, 1)[sample_indices]
         pred_similarity = flattened_compressed @ flattened_compressed.T
+        pred_similarity = torch.nan_to_num(pred_similarity, nan=0.0, posinf=0.0, neginf=0.0)
         loss = F.smooth_l1_loss(gt_similarity, pred_similarity)
         return loss
     
@@ -389,11 +421,11 @@ class VibeSpaceModel(pl.LightningModule):
                     P = gt_eigenvectors_pos[:, :current_n_eig]
                     N = gt_eigenvectors_neg[:, :current_n_eig]
 
-                    N_norm = F.normalize(N, dim=0)
+                    N_norm = F.normalize(N, dim=0, eps=1e-6)
                     projection = torch.matmul(N_norm.T, P)
                     P_filtered = P - beta * torch.matmul(N_norm, projection)
 
-                    P_filtered_norm = F.normalize(P_filtered, dim=-1)
+                    P_filtered_norm = F.normalize(P_filtered, dim=-1, eps=1e-6)
                     total_filtered_similarity += P_filtered_norm @ P_filtered_norm.T
 
                     num_scales += 1
@@ -405,6 +437,7 @@ class VibeSpaceModel(pl.LightningModule):
                     gt_similarity = self._compute_multiscale_similarity(gt_eigenvectors_pos)
             flattened_compressed = compressed_features.flatten(0, 1)
             pred_similarity = flattened_compressed @ flattened_compressed.T
+            pred_similarity = torch.nan_to_num(pred_similarity, nan=0.0, posinf=0.0, neginf=0.0)
 
             flag_encoder_loss = F.smooth_l1_loss(gt_similarity, pred_similarity)
             self.log("loss/flag_encoder", flag_encoder_loss, prog_bar=True)

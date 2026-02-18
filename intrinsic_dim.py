@@ -143,7 +143,33 @@ def estimate_intrinsic_dimension(features: Union[torch.Tensor, np.ndarray],
         )
         
         return float(estimated_dimension)
-        
     except Exception as e:
-        raise RuntimeError(f"Intrinsic dimensionality estimation failed: {str(e)}") from e
-
+        # Fallback for environments where skdim fails (e.g., Py3.13 FrameLocalsProxy issues)
+        logging.warning(
+            f"MLE intrinsic dimension estimation failed ({e}). "
+            "Falling back to PCA-based estimate."
+        )
+        try:
+            # Center data
+            X = sampled_features - np.mean(sampled_features, axis=0, keepdims=True)
+            # Compute singular values
+            _, s, _ = np.linalg.svd(X, full_matrices=False)
+            # Explained variance ratio from singular values
+            var = (s ** 2) / (X.shape[0] - 1)
+            total_var = np.sum(var)
+            if total_var <= 0:
+                raise RuntimeError("Total variance is non-positive in PCA fallback")
+            explained = var / total_var
+            cum_explained = np.cumsum(explained)
+            # Choose smallest k to reach 90% variance
+            k = int(np.searchsorted(cum_explained, 0.90) + 1)
+            k = max(1, min(k, n_features))
+            logging.info(
+                f"PCA fallback intrinsic dimension estimate: {k} "
+                f"(90% variance explained)"
+            )
+            return float(k)
+        except Exception as fallback_e:
+            raise RuntimeError(
+                f"Intrinsic dimensionality estimation failed: {fallback_e}"
+            ) from fallback_e
