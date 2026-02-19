@@ -15,3 +15,5 @@ gradio
 
 # triton is only needed for Linux with CUDA
 # triton==3.0.0 ; sys_platform == 'linux'
+datasets
+huggingface_hub
